@@ -1,0 +1,14 @@
+# 忽略 Python 快取
+__pycache__/
+*.py[cod]
+
+# 忽略環境變數檔案（存放 Token 的地方）
+.env
+
+# 忽略虛擬環境
+venv/
+.venv/
+
+# 忽略對話紀錄與摘要
+record_*.md
+summary_*.md
