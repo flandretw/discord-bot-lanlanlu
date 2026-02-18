@@ -85,6 +85,22 @@ def check_permission(interaction: discord.Interaction) -> bool:
         return False
     return any(role.name in ALLOWED_ROLE_NAMES for role in interaction.user.roles)
 
+def parse_time_input(time_str: str) -> datetime.datetime:
+    """解析時間字串，返回 UTC+8 的 datetime 物件"""
+    if not time_str:
+        return None
+    try:
+        # 嘗試解析 "YYYY-MM-DD HH:MM:SS" 或 "YYYY-MM-DD HH:MM"
+        dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+             dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None
+    
+    # 設定為 UTC+8
+    return dt.replace(tzinfo=TZ_TW)
+
 @bot.event
 async def on_ready():
     print(f'目前登入身份：{bot.user}')
@@ -192,13 +208,19 @@ async def generate_summary(channel_name, messages):
         print(f"Gemini API Error: {e}")
         return None
 
-async def save_and_stop(channel, target_channel=None):
+async def save_and_stop(channel, target_channel=None, session_data=None):
     """執行停止錄製與存檔的共用邏輯"""
     channel_id = channel.id
-    if channel_id not in recording_sessions:
+    
+    # 若有傳入 session_data (Batch Mode)，則直接使用
+    if session_data:
+        session = session_data
+    # 否則從全域取得 (Live Mode)
+    elif channel_id in recording_sessions:
+        session = recording_sessions[channel_id]
+    else:
         return
 
-    session = recording_sessions[channel_id]
     messages = session['messages']
     
     # 如果沒有訊息
@@ -281,15 +303,25 @@ async def save_and_stop(channel, target_channel=None):
         await channel.send(f"傳送檔案時發生錯誤: {e}")
     finally:
         # 清理
-        if channel_id in recording_sessions:
+        # 只有在 Session 存在於全域字典時才刪除 (Batch Mode 不會寫入全域字典)
+        if channel_id in recording_sessions and not session_data:
              del recording_sessions[channel_id]
         if os.path.exists(filename):
             os.remove(filename)
         if summary_filename and os.path.exists(summary_filename):
             os.remove(summary_filename)
 
-@bot.tree.command(name="record", description="開始錄製目前頻道的訊息")
-async def record(interaction: discord.Interaction, limit: int = 0, minutes: int = 0, after_message_id: str = None, summary: bool = True):
+@bot.tree.command(name="record", description="開始錄製目前頻道的訊息 (支援指定時間範圍)")
+async def record(
+    interaction: discord.Interaction, 
+    limit: int = 0, 
+    minutes: int = 0, 
+    after_message_id: str = None, 
+    before_message_id: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    summary: bool = True
+):
     # 權限檢查
     if not check_permission(interaction):
         roles_str = " 或 ".join([f"**{r}**" for r in ALLOWED_ROLE_NAMES])
@@ -299,99 +331,157 @@ async def record(interaction: discord.Interaction, limit: int = 0, minutes: int 
     channel_id = interaction.channel_id
     channel = interaction.channel
 
+    # 如果已經在錄製中，且不是批次模式 (批次模式允許隨時插入，因為它不進入長期監聽)
+    # 但為了避免混亂，若已經有一般錄製進行中，建議先禁止或提示
     if channel_id in recording_sessions:
-        await interaction.response.send_message("🔴 已經在錄製中！", ephemeral=True)
+        await interaction.response.send_message("🔴 這個頻道已經在錄製中！請先輸入 `/stop` 結束目前的錄製。", ephemeral=True)
         return
 
-    # 初始化錄製 Session
-    recording_sessions[channel_id] = {
-        'start_time': datetime.datetime.now(),
+    # 解析時間參數
+    dt_start = parse_time_input(start_time)
+    dt_end = parse_time_input(end_time)
+    
+    # 驗證時間格式
+    parsed_time_info = ""
+    if start_time and not dt_start:
+         parsed_time_info += f"\n⚠️ 無法解析 start_time: `{start_time}` (格式應為 YYYY-MM-DD HH:MM)"
+    if end_time and not dt_end:
+         parsed_time_info += f"\n⚠️ 無法解析 end_time: `{end_time}` (格式應為 YYYY-MM-DD HH:MM)"
+         
+    # 判斷是否為「批次匯出模式」 (Batch Mode)
+    # 條件: 有明確的「結束點」 (before_message_id 或 end_time)
+    is_batch_mode = False
+    if before_message_id or dt_end:
+        is_batch_mode = True
+    
+    # 初始化錄製 Session (不管是 Batch 還是 Live 都先建一個結構，方便統一處理)
+    # 注意: Batch Mode 不會將此 session 放入全域 recording_sessions，以免與 on_message 衝突
+    session_data = {
+        'start_time': datetime.datetime.now(), # 這是錄製操作的開始時間，不是訊息的開始時間
         'last_active': datetime.datetime.now(),
         'messages': [],
         'backtrack_info': None,
         'summary_enabled': summary
     }
     
-    # 處理回溯紀錄 (Backtrack)
-    warning_info = ""
-    start_msg_id = None
-    backtrack_summary = ""
+    # 準備回溯參數 (Discord API)
+    fetch_limit = MAX_HISTORY_LIMIT
+    fetch_after = None
+    fetch_before = None
     
-    # 優先處理 after_message_id
+    backtrack_summary = ""
+    warning_info = parsed_time_info
+
+    # 設定 fetch_after (起點)
     if after_message_id:
         if not after_message_id.isdigit():
-             warning_info += "\n⚠️ 訊息 ID 格式錯誤，忽略回溯。"
+             warning_info += "\n⚠️ after_message_id 格式錯誤，已忽略。"
         else:
-            start_msg_id = int(after_message_id)
-            backtrack_summary = f"從訊息 ID {after_message_id} 開始"
+            fetch_after = discord.Object(id=int(after_message_id))
+            backtrack_summary += f"從 ID {after_message_id} 之後 "
+    elif dt_start:
+        # 將 UTC+8 轉回 UTC 以供 Discord API 使用
+        utc_start = dt_start.astimezone(datetime.timezone.utc)
+        fetch_after = utc_start
+        backtrack_summary += f"從 {dt_start.strftime('%Y-%m-%d %H:%M')} 之後 "
+    elif minutes > 0:
+        fetch_after = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes)
+        backtrack_summary += f"回溯過去 {minutes} 分鐘 "
 
-    # 若無 ID 則檢查 minutes/limit
-    elif minutes > 0 or limit > 0:
-        # 套用限制 (防呆機制)
-        if minutes > MAX_HISTORY_DAYS * 24 * 60:
-            minutes = MAX_HISTORY_DAYS * 24 * 60
-            warning_info += f"\n⚠️ 時間已自動修正為上限 {MAX_HISTORY_DAYS} 天"
-            
+    # 設定 fetch_before (終點)
+    if before_message_id:
+        if not before_message_id.isdigit():
+             warning_info += "\n⚠️ before_message_id 格式錯誤，已忽略。"
+        else:
+            fetch_before = discord.Object(id=int(before_message_id))
+            backtrack_summary += f"到 ID {before_message_id} 之前 "
+    elif dt_end:
+        utc_end = dt_end.astimezone(datetime.timezone.utc)
+        fetch_before = utc_end
+        backtrack_summary += f"到 {dt_end.strftime('%Y-%m-%d %H:%M')} 之前 "
+
+    # 如果有設定 limit (則數限制)
+    if limit > 0:
         if limit > MAX_HISTORY_LIMIT:
-            limit = MAX_HISTORY_LIMIT
-            warning_info += f"\n⚠️ 訊息數已自動修正為上限 {MAX_HISTORY_LIMIT} 則"
-            
-        backtrack_summary = f"回溯 {minutes} 分鐘 / {limit} 則"
-
-    # 建立啟動訊息
-    status_msg = f"🔴 開始錄製！"
-    if not summary:
-        status_msg += " (🔕 AI 摘要已關閉)"
+             limit = MAX_HISTORY_LIMIT
+             warning_info += f"\n⚠️ 訊息數已自動修正為上限 {MAX_HISTORY_LIMIT} 則"
+        fetch_limit = limit
+        backtrack_summary += f"(限制 {limit} 則)"
     
-    await interaction.response.send_message(f"{status_msg}{warning_info}", ephemeral=False)
+    # 建構回應訊息
+    if is_batch_mode:
+        action_msg = "📥 **開始批次匯出**"
+        desc_msg = f"正在抓取範圍內的對話紀錄……\n{backtrack_summary}"
+    else:
+        action_msg = "🔴 **開始錄製**"
+        desc_msg = f"正在開始監聽……\n{backtrack_summary}"
+        if not backtrack_summary: # 若無指定回溯，預設就是現在開始
+             desc_msg += "(從現在開始)"
+        desc_msg += f"\n使用 `/stop` 結束並存檔。\n(若閒置 {IDLE_TIMEOUT_MINUTES} 分鐘將自動結束)"
 
-    # 非同步執行回溯抓取 (避免卡住指令回應)
+    if not summary:
+        action_msg += " (🔕 AI 摘要已關閉)"
+
+    await interaction.response.send_message(f"{action_msg}\n{desc_msg}{warning_info}", ephemeral=False)
+
+    # 開始抓取訊息 (Batch & Backtrack)
     try:
         fetched_messages = []
         
-        if start_msg_id:
-             # 從指定 ID 之後開始抓取 (oldest_first=True 讓順序為 時間舊 -> 新)
-             # 注意: history(after=……) 不包含該 ID 本身，若需包含可微調，但通常是指「這則之後」
-             async for msg in channel.history(limit=MAX_HISTORY_LIMIT, after=discord.Object(id=start_msg_id), oldest_first=True):
-                 if msg.author == bot.user: # 排除機器人自己
-                    continue
-                 fetched_messages.append(process_message_content(msg))
-                 
-        elif minutes > 0:
-            after_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes)
-            async for msg in channel.history(limit=MAX_HISTORY_LIMIT, after=after_time, oldest_first=True):
-                if msg.author == bot.user: # 排除機器人自己
-                    continue
-                fetched_messages.append(process_message_content(msg))
-                
-        elif limit > 0:
-             # 單純抓取數量 (最新 N 則，需反轉順序變成 舊 -> 新)
-             async for msg in channel.history(limit=limit):
-                 if msg.author == bot.user: # 排除機器人自己
-                    continue
-                 fetched_messages.append(process_message_content(msg))
-             fetched_messages.reverse() # 因為是抓最新的，所以要反轉回時間順序
-
-        # 將回溯的訊息加入 Session
-        if fetched_messages:
-            recording_sessions[channel_id]['messages'].extend(fetched_messages)
-            recording_sessions[channel_id]['backtrack_info'] = f"{backtrack_summary} (已回溯 {len(fetched_messages)} 則訊息)"
-            print(f"Backtracked {len(fetched_messages)} messages.")
+        # 根據是否有指定範圍來決定抓取策略
+        # 注意: channel.history 的 after/before 參數
+        # oldest_first=True: 從舊到新 (適合有 start point)
+        # oldest_first=False: 從新到舊 (預設，適合只要 latest N)
+        
+        history_kwargs = {'limit': fetch_limit}
+        if fetch_after:
+            history_kwargs['after'] = fetch_after
+            history_kwargs['oldest_first'] = True # 有起點通常習慣從舊的開始看
+        if fetch_before:
+             history_kwargs['before'] = fetch_before
+             # 若同時有 after 和 before，oldest_first=True 會從 after 開始往後抓直到 before
+        
+        # 特殊情況: 只有 limit 或 minutes (無明確 ID/Time 區間)，就是抓最新的
+        # 但如果 minutes 轉成了 fetch_after，上面已經處理了
+        
+        # 執行抓取
+        async for msg in channel.history(**history_kwargs):
+            if msg.author == bot.user:
+                continue
+            fetched_messages.append(process_message_content(msg))
             
+        # 如果是 oldest_first=False (預設)，抓下來的是 新->舊，需反轉
+        if not history_kwargs.get('oldest_first', False):
+            fetched_messages.reverse()
+
+        if fetched_messages:
+            session_data['messages'].extend(fetched_messages)
+            session_data['backtrack_info'] = f"{backtrack_summary} (共 {len(fetched_messages)} 則)"
+            print(f"Fetched {len(fetched_messages)} messages.")
+        else:
+             session_data['backtrack_info'] = f"{backtrack_summary} (無訊息)"
+
+        # 批次模式: 抓完直接存檔，不進入 Session
+        if is_batch_mode:
+            # 暫時將 session 放入全域以便 save_and_stop 使用 (或重構 save_and_stop)
+            # 為了最小改動，我們先放入，存檔完立即刪除
+            # 但要避免 on_message 寫入，這裡我們不放 recording_sessions
+            # 直接呼叫 save_and_stop (需修改 save_and_stop 支援直接傳入 session data)
+            # 這裡我們選擇: 修改 save_and_stop 讓他支援傳入 session_data
+            
+             await save_and_stop(channel, session_data=session_data)
+             # 批次模式結束，更新互動訊息
+             await interaction.edit_original_response(content=f"{action_msg}\n✅ **匯出完成！**\n{session_data['backtrack_info']}")
+             
+        else:
+            # Live 模式: 也就是原來的錄製模式
+            recording_sessions[channel_id] = session_data
+            # 更新互動訊息
+            await interaction.edit_original_response(content=f"{action_msg}\n✅ **已啟動！**\n{session_data['backtrack_info']}{warning_info}\n使用 `/stop` 結束。")
+
     except Exception as e:
         print(f"Error fetching history: {e}")
-        await channel.send(f"⚠️ 回溯歷史訊息時發生錯誤: {e}", ephemeral=True)
-            # 發生錯誤仍繼續錄製，只是沒有舊訊息
-            
-    initial_response_content = f"開始錄製 `{interaction.channel.name}` 的對話內容。"
-    if recording_sessions[channel_id]['backtrack_info']:
-        initial_response_content += f"\n✅ {recording_sessions[channel_id]['backtrack_info']}"
-    if warning_info:
-        initial_response_content += warning_info
-    initial_response_content += f"\n使用 `/stop` 結束並存檔。\n(若閒置 {IDLE_TIMEOUT_MINUTES} 分鐘將自動結束)"
-
-    # Edit the initial response to include backtrack info
-    await interaction.edit_original_response(content=initial_response_content)
+        await interaction.followup.send(f"⚠️ 抓取歷史訊息時發生錯誤: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="stop", description="停止錄製並輸出紀錄")
