@@ -527,10 +527,23 @@ async def summary_cmd(
         
         if summary_text:
             content = f"# 🤖 AI 直接摘要 - {interaction.channel.name}\n\n{summary_text}\n\n---\n*範圍: {backtrack_summary} (共 {len(fetched_messages)} 則)*"
-            if len(content) > 1900:
-                await interaction.edit_original_response(content=content[:1900] + "\n\n...\n*(內容過長已截斷)*")
-            else:
-                await interaction.edit_original_response(content=content)
+            
+            # 建立檔案
+            safe_channel_name = sanitize_filename(interaction.channel.name)
+            timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"summary_{safe_channel_name}_{timestamp_str}.md"
+            
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    
+                await interaction.edit_original_response(content="✅ **AI 摘要已產生！**", attachments=[discord.File(filename)])
+            except Exception as e:
+                print(f"Error saving summary file: {e}")
+                await interaction.edit_original_response(content="⚠️ 儲存檔案時發生錯誤，請稍後再試。")
+            finally:
+                if os.path.exists(filename):
+                    os.remove(filename)
         else:
             await interaction.edit_original_response(content="⚠️ Gemini 目前暫時無法使用，或摘要產生失敗。請稍後再試。")
 
