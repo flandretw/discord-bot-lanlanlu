@@ -1,4 +1,4 @@
-# LanLanLu
+# LanLanLu Discord Bot
 
 [English](README.md) | [臺灣正體中文](README-zh_TW.md)
 

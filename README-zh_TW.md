@@ -1,4 +1,4 @@
-# 攔藍錄
+# 攔藍錄 Discord 機器人
 
 [English](README.md) | [臺灣正體中文](README-zh_TW.md)
 
