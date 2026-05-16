@@ -17,7 +17,7 @@ From the LanLanLu universe comes **LanLanLu** — a crazy bot dedicated to kidna
 
 ## 🔥 Crazy Magical Commands
 
-⚠️ **Note**: Only users with the **`社群管理員`**, **`團長`**, or **`管理員`** roles can operate these commands.
+⚠️ **Note**: Only users with the native **Administrator** permission, or those granted access via `/add_role`, can operate these commands.
 
 * 🎙️ **`/record`**
   Start recording the current channel's chat, or perform a batch export.
@@ -32,6 +32,8 @@ From the LanLanLu universe comes **LanLanLu** — a crazy bot dedicated to kidna
   * **Usage**: Can specify a `target_channel` to send the files to, or default to the current channel.
 * 💬 **`/say`**
   Send a specific message through the bot. Hides the trace of the command caller, speaking directly as the bot.
+* 🛡️ **`/add_role`** & **`/remove_role`**
+  Add or remove a role from the authorized list. (Server Administrator permission required)
 
 ---
 
@@ -39,7 +41,7 @@ From the LanLanLu universe comes **LanLanLu** — a crazy bot dedicated to kidna
 
 1. **Set up Token**: Open the `.env` file and fill in your Discord Bot Token: `DISCORD_TOKEN=Your Token`
 2. **Start the bot**: Run the command in your terminal: `.\venv\Scripts\python main.py`
-3. **Role Permissions**: Please make sure you have either the `社群管理員`, `團長`, or `管理員` role in your Discord server.
+3. **Role Permissions**: Server Administrators have default access. To authorize other roles, an Administrator must use the `/add_role` command in Discord. The configurations will be saved locally in `config.json`.
 
 ---
 
