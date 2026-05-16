@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 import datetime
 from datetime import timedelta, timezone
 import asyncio
+import json
 
 # 載入環境變數
 load_dotenv()
@@ -22,7 +23,7 @@ gemini_client = None
 if GEMINI_API_KEY:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
-    print("注意: 未設定 GEMINI_API_KEY，AI 摘要功能將停用。")
+    print("注意：未設定 GEMINI_API_KEY，AI 摘要功能將停用。")
 
 # 設定 Intent (機器人權限)
 intents = discord.Intents.default()
@@ -48,10 +49,21 @@ IDLE_TIMEOUT_MINUTES = 30
 # 設定回溯限制
 MAX_HISTORY_DAYS = 7 # 最大 7 天
 MAX_HISTORY_LIMIT = 100 # 最大 100 則訊息
+MAX_SESSION_MESSAGES = 5000 # 單次錄製最大訊息量防呆 (防 OOM)
 
-# 設定允許使用指令的身分組名稱
-# 設定允許使用指令的身分組名稱
-ALLOWED_ROLE_NAMES = ["社群管理員", "團長", "管理員"]
+CONFIG_FILE = "config.json"
+def load_allowed_roles():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("allowed_role_ids", [])
+    return []
+
+def save_allowed_roles(role_ids):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump({"allowed_role_ids": role_ids}, f, indent=4)
+
+ALLOWED_ROLE_IDS = load_allowed_roles()
 
 def process_message_content(message: discord.Message) -> dict:
     """處理單則訊息，轉換為紀錄用的字典格式"""
@@ -83,7 +95,10 @@ def check_permission(interaction: discord.Interaction) -> bool:
     """檢查使用者是否有權限使用指令"""
     if isinstance(interaction.user, discord.User): # 私訊中無法檢查身分組
         return False
-    return any(role.name in ALLOWED_ROLE_NAMES for role in interaction.user.roles)
+    # 預設允許伺服器管理員，或是擁有指定身分組 ID 的使用者
+    if interaction.user.guild_permissions.administrator:
+        return True
+    return any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles)
 
 def parse_time_input(time_str: str) -> datetime.datetime:
     """解析時間字串，返回 UTC+8 的 datetime 物件"""
@@ -143,8 +158,10 @@ async def generate_summary(channel_name, messages):
         # 準備對話內容 (轉換為純文字)
         conversation_text = ""
         for msg in messages:
+            # 消毒：過濾掉可能干擾 Prompt 的特殊標籤 (防 Prompt Injection)
+            safe_content = msg['content'].replace("<conversation_log>", "[紀錄開始]").replace("</conversation_log>", "[紀錄結束]")
             # 確保訊息包含時間戳記，以便 AI 引用
-            conversation_text += f"[{msg['time']}] {msg['author']}: {msg['content']}\n"
+            conversation_text += f"[{msg['time']}] {msg['author']}: {safe_content}\n"
         
         # 避免送出空內容
         if not conversation_text.strip():
@@ -163,15 +180,15 @@ async def generate_summary(channel_name, messages):
         2. **參與者名單**：列出所有參與討論的人員 (若有明確身分或立場請一併標註)。
         3. **重點討論內容**：
             - 請依時間順序列出討論重點。
-            - 每個重點需附上發生的大致時間點 (例如 `[10:30]`)。
+            - 每個重點需附上發生的大致時間點（例如：`[10:30]`）。
             - 語氣請保持客觀、中立、正式。
         4. **結論與待辦事項**：若對話中有達成共識或決議，請明確列出；若無則標註「無明確結論」。
 
         **排版與用語規範 (請務必遵守)**：
-        1. **中英文之間請務必加上空格** (例如：「在 Discord 頻道中」而非「在Discord頻道中」)。
-        2. **數字與中文之間也請加上空格** (例如：「有 5 個人」而非「有5個人」)。
-        3. **請使用全形標點符號** (例如：，、。！)，但英文專有名詞或程式碼相關內容除外。
-        4. **專有名詞請維持原樣** (例如：Discord, Gemini, API)，不需刻意翻譯，除非有約定俗成的中文譯名。
+        1. **中英文之間請務必加上空格**（例如：「在 Discord 頻道中」而非「在Discord頻道中」）。
+        2. **數字與中文之間也請加上空格**（例如：「有 5 個人」而非「有5個人」）。
+        3. **請使用全形標點符號**（例如：，、。！），但英文專有名詞或程式碼相關內容除外。
+        4. **專有名詞請維持原樣**（例如：Discord, Gemini, API），不需刻意翻譯，除非有約定俗成的中文譯名。
         
         對話內容：
         <conversation_log>
@@ -238,10 +255,10 @@ async def save_and_stop(channel, target_channel=None, session_data=None):
         
     end_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    file_content = f"# 攔藍錄的對話紀錄\n**頻道**: {channel.name}\n**開始時間**: {start_time_str}\n**結束時間**: {end_time_str}\n"
+    file_content = f"# 攔藍錄的對話紀錄\n**頻道**：{channel.name}\n**開始時間**：{start_time_str}\n**結束時間**：{end_time_str}\n"
     
     if session.get('backtrack_info'):
-        file_content += f"**回溯紀錄**: {session['backtrack_info']}\n"
+        file_content += f"**回溯紀錄**：{session['backtrack_info']}\n"
         
     file_content += "\n"
     
@@ -256,7 +273,7 @@ async def save_and_stop(channel, target_channel=None, session_data=None):
         with open(filename, "w", encoding="utf-8") as f:
             f.write(file_content)
     except Exception as e:
-        await channel.send(f"寫入檔案時發生錯誤: {e}")
+        await channel.send(f"寫入檔案時發生錯誤：{e}")
         del recording_sessions[channel_id] 
         return
 
@@ -280,7 +297,7 @@ async def save_and_stop(channel, target_channel=None, session_data=None):
                 with open(summary_filename, "w", encoding="utf-8") as f:
                     f.write(summary_content)
             else:
-                await channel.send("⚠️ Gemini 目前暫時無法使用，請稍後再試。(詳細錯誤請查看控制台)")
+                await channel.send("⚠️ Gemini 目前暫時無法使用，請稍後再試。（詳細錯誤請查看控制台）")
             
             await processing_msg.delete() # 刪除提示訊息
             
@@ -300,7 +317,7 @@ async def save_and_stop(channel, target_channel=None, session_data=None):
         if send_to_channel != channel:
              await channel.send(f"錄製結束，紀錄已傳送至 {send_to_channel.mention}。")
     except Exception as e:
-        await channel.send(f"傳送檔案時發生錯誤: {e}")
+        await channel.send(f"傳送檔案時發生錯誤：{e}")
     finally:
         # 清理
         # 只有在 Session 存在於全域字典時才刪除 (Batch Mode 不會寫入全域字典)
@@ -354,7 +371,7 @@ async def fetch_history_messages(channel, limit: int, minutes: int, after_messag
              limit = MAX_HISTORY_LIMIT
              warning_info += f"\n⚠️ 訊息數已自動修正為上限 {MAX_HISTORY_LIMIT} 則"
         fetch_limit = limit
-        backtrack_summary += f"(限制 {limit} 則)"
+        backtrack_summary += f"（限制 {limit} 則）"
         
     fetched_messages = []
     
@@ -375,7 +392,7 @@ async def fetch_history_messages(channel, limit: int, minutes: int, after_messag
         
     return fetched_messages, backtrack_summary, warning_info
 
-@bot.tree.command(name="record", description="開始錄製目前頻道的訊息 (支援指定時間範圍)")
+@bot.tree.command(name="record", description="開始錄製目前頻道的訊息（支援指定時間範圍）")
 async def record(
     interaction: discord.Interaction, 
     limit: int = 0, 
@@ -388,8 +405,7 @@ async def record(
 ):
     # 權限檢查
     if not check_permission(interaction):
-        roles_str = " 或 ".join([f"**{r}**" for r in ALLOWED_ROLE_NAMES])
-        await interaction.response.send_message(f"❌ 抱歉，您需要擁有 {roles_str} 其中之一的身分組才能使用此指令。", ephemeral=True)
+        await interaction.response.send_message("❌ 抱歉，您需要具有伺服器管理員權限或被授權的身分組才能使用此指令。", ephemeral=True)
         return
 
     channel_id = interaction.channel_id
@@ -408,9 +424,9 @@ async def record(
     # 驗證時間格式
     parsed_time_info = ""
     if start_time and not dt_start:
-         parsed_time_info += f"\n⚠️ 無法解析 start_time: `{start_time}` (格式應為 YYYY-MM-DD HH:MM)"
+         parsed_time_info += f"\n⚠️ 無法解析 start_time：`{start_time}`（格式應為 YYYY-MM-DD HH:MM）"
     if end_time and not dt_end:
-         parsed_time_info += f"\n⚠️ 無法解析 end_time: `{end_time}` (格式應為 YYYY-MM-DD HH:MM)"
+         parsed_time_info += f"\n⚠️ 無法解析 end_time：`{end_time}`（格式應為 YYYY-MM-DD HH:MM）"
          
     # 判斷是否為「批次匯出模式」 (Batch Mode)
     # 條件: 有明確的「結束點」 (before_message_id 或 end_time)
@@ -445,20 +461,20 @@ async def record(
             action_msg = "🔴 **開始錄製**"
             desc_msg = f"正在開始監聽……\n{backtrack_summary}"
             if not backtrack_summary: # 若無指定回溯，預設就是現在開始
-                 desc_msg += "(從現在開始)"
-            desc_msg += f"\n使用 `/stop` 結束並存檔。\n(若閒置 {IDLE_TIMEOUT_MINUTES} 分鐘將自動結束)"
+                 desc_msg += "（從現在開始）"
+            desc_msg += f"\n使用 `/stop` 結束並存檔。\n（若閒置 {IDLE_TIMEOUT_MINUTES} 分鐘將自動結束）"
 
         if not summary:
-            action_msg += " (🔕 AI 摘要已關閉)"
+            action_msg += "（🔕 AI 摘要已關閉）"
 
         await interaction.response.send_message(f"{action_msg}\n{desc_msg}{warning_info}", ephemeral=False)
 
         if fetched_messages:
             session_data['messages'].extend(fetched_messages)
-            session_data['backtrack_info'] = f"{backtrack_summary} (共 {len(fetched_messages)} 則)"
+            session_data['backtrack_info'] = f"{backtrack_summary}（共 {len(fetched_messages)} 則）"
             print(f"Fetched {len(fetched_messages)} messages.")
         else:
-             session_data['backtrack_info'] = f"{backtrack_summary} (無訊息)"
+             session_data['backtrack_info'] = f"{backtrack_summary}（無訊息）"
 
         # 批次模式: 抓完直接存檔，不進入 Session
         if is_batch_mode:
@@ -473,10 +489,10 @@ async def record(
 
     except Exception as e:
         print(f"Error fetching history: {e}")
-        await interaction.followup.send(f"⚠️ 抓取歷史訊息時發生錯誤: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ 抓取歷史訊息時發生錯誤：{e}", ephemeral=True)
 
 
-@bot.tree.command(name="summary", description="直接為目前的頻道產生對話摘要 (不輸出完整紀錄檔)")
+@bot.tree.command(name="summary", description="直接為目前的頻道產生對話摘要（不輸出完整紀錄檔）")
 async def summary_cmd(
     interaction: discord.Interaction, 
     limit: int = 0, 
@@ -488,8 +504,7 @@ async def summary_cmd(
 ):
     # 權限檢查
     if not check_permission(interaction):
-        roles_str = " 或 ".join([f"**{r}**" for r in ALLOWED_ROLE_NAMES])
-        await interaction.response.send_message(f"❌ 抱歉，您需要擁有 {roles_str} 其中之一的身分組才能使用此指令。", ephemeral=True)
+        await interaction.response.send_message("❌ 抱歉，您需要具有伺服器管理員權限或被授權的身分組才能使用此指令。", ephemeral=True)
         return
 
     if not GEMINI_API_KEY:
@@ -503,9 +518,9 @@ async def summary_cmd(
     # 驗證時間格式
     parsed_time_info = ""
     if start_time and not dt_start:
-         parsed_time_info += f"\n⚠️ 無法解析 start_time: `{start_time}` (格式應為 YYYY-MM-DD HH:MM)"
+         parsed_time_info += f"\n⚠️ 無法解析 start_time：`{start_time}`（格式應為 YYYY-MM-DD HH:MM）"
     if end_time and not dt_end:
-         parsed_time_info += f"\n⚠️ 無法解析 end_time: `{end_time}` (格式應為 YYYY-MM-DD HH:MM)"
+         parsed_time_info += f"\n⚠️ 無法解析 end_time：`{end_time}`（格式應為 YYYY-MM-DD HH:MM）"
 
     # 送出初始回應，防止超時
     await interaction.response.send_message(f"🤖 **正在抓取訊息並準備產生摘要……**{parsed_time_info}", ephemeral=False)
@@ -526,7 +541,7 @@ async def summary_cmd(
         summary_text, used_model = await generate_summary(interaction.channel.name, fetched_messages)
         
         if summary_text:
-            content = f"# 🤖 AI 直接摘要 - {interaction.channel.name}\n\n{summary_text}\n\n---\n*範圍: {backtrack_summary} (共 {len(fetched_messages)} 則)*\n*模型: {used_model}*"
+            content = f"# 🤖 AI 直接摘要 - {interaction.channel.name}\n\n{summary_text}\n\n---\n*範圍：{backtrack_summary}（共 {len(fetched_messages)} 則）*\n*模型：{used_model}*"
             
             # 建立檔案
             safe_channel_name = sanitize_filename(interaction.channel.name)
@@ -549,13 +564,12 @@ async def summary_cmd(
 
     except Exception as e:
         print(f"Error generating summary command: {e}")
-        await interaction.followup.send(f"⚠️ 處理摘要時發生錯誤: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ 處理摘要時發生錯誤：{e}", ephemeral=True)
 
 @bot.tree.command(name="stop", description="停止錄製並輸出紀錄")
 async def stop(interaction: discord.Interaction, target_channel: discord.TextChannel = None):
     if not check_permission(interaction):
-        roles_str = " 或 ".join([f"**{r}**" for r in ALLOWED_ROLE_NAMES])
-        await interaction.response.send_message(f"❌ 抱歉，您需要擁有 {roles_str} 其中之一的身分組才能使用此指令。", ephemeral=True)
+        await interaction.response.send_message("❌ 抱歉，您需要具有伺服器管理員權限或被授權的身分組才能使用此指令。", ephemeral=True)
         return
 
     channel_id = interaction.channel_id
@@ -571,8 +585,7 @@ async def stop(interaction: discord.Interaction, target_channel: discord.TextCha
 @bot.tree.command(name="say", description="讓機器人重複你說的話")
 async def say(interaction: discord.Interaction, message: str):
     if not check_permission(interaction):
-        roles_str = " 或 ".join([f"**{r}**" for r in ALLOWED_ROLE_NAMES])
-        await interaction.response.send_message(f"❌ 抱歉，您需要擁有 {roles_str} 其中之一的身分組才能使用此指令。", ephemeral=True)
+        await interaction.response.send_message("❌ 抱歉，您需要具有伺服器管理員權限或被授權的身分組才能使用此指令。", ephemeral=True)
         return
     
     # 安全檢查：禁止 Mass Ping
@@ -583,7 +596,31 @@ async def say(interaction: discord.Interaction, message: str):
     # 回應 Interaction (Ephemeral) 表示成功
     await interaction.response.send_message("已傳送訊息。", ephemeral=True)
     # 實際傳送訊息到頻道
-    await interaction.channel.send(message)
+    await interaction.channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.tree.command(name="add_role", description="新增允許使用錄製指令的身分組（僅限管理員）")
+async def add_role(interaction: discord.Interaction, role: discord.Role):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 僅限伺服器管理員可使用此指令。", ephemeral=True)
+        return
+    if role.id in ALLOWED_ROLE_IDS:
+        await interaction.response.send_message(f"⚠️ {role.mention} 已經在授權清單中了。", ephemeral=True)
+        return
+    ALLOWED_ROLE_IDS.append(role.id)
+    save_allowed_roles(ALLOWED_ROLE_IDS)
+    await interaction.response.send_message(f"✅ 已將 {role.mention} 加入授權清單。", ephemeral=True)
+
+@bot.tree.command(name="remove_role", description="移除允許使用錄製指令的身分組（僅限管理員）")
+async def remove_role(interaction: discord.Interaction, role: discord.Role):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 僅限伺服器管理員可使用此指令。", ephemeral=True)
+        return
+    if role.id not in ALLOWED_ROLE_IDS:
+        await interaction.response.send_message(f"⚠️ {role.mention} 不在授權清單中。", ephemeral=True)
+        return
+    ALLOWED_ROLE_IDS.remove(role.id)
+    save_allowed_roles(ALLOWED_ROLE_IDS)
+    await interaction.response.send_message(f"✅ 已將 {role.mention} 從授權清單移除。", ephemeral=True)
 
 @bot.event
 async def on_message(message):
@@ -594,9 +631,16 @@ async def on_message(message):
     # 檢查是否在錄製清單中
     if message.channel.id in recording_sessions:
         try:
+            session = recording_sessions[message.channel.id]
             msg_data = process_message_content(message)
-            recording_sessions[message.channel.id]['messages'].append(msg_data)
-            recording_sessions[message.channel.id]['last_active'] = datetime.datetime.now()
+            session['messages'].append(msg_data)
+            session['last_active'] = datetime.datetime.now()
+            
+            # 安全機制：檢查是否超過記憶體絕對上限
+            if len(session['messages']) >= MAX_SESSION_MESSAGES:
+                await message.channel.send(f"⚠️ 警告：本頻道錄製已達上限（{MAX_SESSION_MESSAGES} 則）！為保護系統記憶體，已強制停止錄製並存檔。")
+                await save_and_stop(message.channel)
+                
         except Exception as e:
             print(f"Error processing message in {message.channel.name}: {e}")
 
