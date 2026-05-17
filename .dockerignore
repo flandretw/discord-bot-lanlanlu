@@ -1,0 +1,18 @@
+# 忽略虛擬環境
+venv/
+.venv/
+
+# 忽略 Python 快取
+__pycache__/
+*.pyc
+
+# 忽略環境變數（Docker 會透過 docker-compose 讀取外部的 .env）
+.env
+
+# 忽略對話紀錄與摘要，避免打包進映像檔中
+record_*.md
+summary_*.md
+*.md
+
+# Git
+.git/

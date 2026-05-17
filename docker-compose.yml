@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  lanlanlu-bot:
+    build: .
+    container_name: lanlanlu-bot
+    # 當機器人崩潰或伺服器重新開機時，自動重新啟動
+    restart: unless-stopped
+    # 讀取專案目錄下的 .env 檔案
+    env_file:
+      - .env
+    volumes:
+      # 【重要】將本地端的 config.json 映射到容器內，確保身分組設定不會在重啟後消失
+      # 注意：請確保在執行 docker compose up 之前，同目錄下已經有一個 config.json 檔案（或手動建立一個空的）
+      - ./config.json:/app/config.json
