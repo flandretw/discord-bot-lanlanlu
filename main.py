@@ -54,9 +54,13 @@ MAX_SESSION_MESSAGES = 5000 # 單次錄製最大訊息量防呆 (防 OOM)
 CONFIG_FILE = "config.json"
 def load_allowed_roles():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("allowed_role_ids", [])
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("allowed_role_ids", [])
+        except json.JSONDecodeError:
+            # 檔案存在但內容為空 (0 bytes) 時，視為沒有設定
+            return []
     return []
 
 def save_allowed_roles(role_ids):
