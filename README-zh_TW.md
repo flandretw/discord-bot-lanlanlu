@@ -39,9 +39,23 @@
 
 ## 🛠️ 安裝與啟動
 
-1. **設定 Token**：開啟 `.env` 檔案，填入您的 Discord Bot Token：`DISCORD_TOKEN=您的 Token`
-2. **啟動機器人**：在終端機執行指令：`.\venv\Scripts\python main.py`
-3. **權限設定**：伺服器管理員預設擁有所有權限。若要開放給其他身分組，請管理員直接在 Discord 頻道中輸入 `/add_role` 指令進行動態授權（設定會自動儲存於 `config.json`）。
+### 方法一：使用 Docker 部署（推薦）
+適合放置於 24 小時運作的 Linux 伺服器，內建自動重啟機制。
+1. **設定環境變數**：建立 `.env` 檔案並寫入您的 Token：
+   ```env
+   DISCORD_TOKEN=您的_Discord_Token
+   GEMINI_API_KEY=您的_Gemini_API_Key
+   ```
+2. **初始化設定檔**：在專案目錄下建立一個空白檔案以防 Docker 掛載錯誤：`touch config.json`
+3. **啟動機器人**：執行指令 `docker compose up -d`
+
+### 方法二：本機直接啟動
+1. **設定環境變數**：在 `.env` 檔案中填入您的 Token。
+2. **安裝套件**：`pip install -r requirements.txt`
+3. **啟動機器人**：`python main.py`
+
+### 🔑 權限設定
+伺服器管理員預設擁有所有權限。若要開放給其他身分組，請管理員直接在 Discord 頻道中輸入 `/add_role` 指令進行動態授權（設定會自動儲存於 `config.json`）。
 
 ---
 

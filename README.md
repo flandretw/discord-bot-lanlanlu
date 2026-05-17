@@ -39,9 +39,23 @@ From the LanLanLu universe comes **LanLanLu** — a crazy bot dedicated to kidna
 
 ## 🛠️ Setup & Usage
 
-1. **Set up Token**: Open the `.env` file and fill in your Discord Bot Token: `DISCORD_TOKEN=Your Token`
-2. **Start the bot**: Run the command in your terminal: `.\venv\Scripts\python main.py`
-3. **Role Permissions**: Server Administrators have default access. To authorize other roles, an Administrator must use the `/add_role` command in Discord. The configurations will be saved locally in `config.json`.
+### Method 1: Deployment via Docker (Recommended)
+Ideal for 24/7 server environments with built-in auto-restart functionality.
+1. **Environment Variables**: Create a `.env` file with your tokens:
+   ```env
+   DISCORD_TOKEN=Your_Discord_Token
+   GEMINI_API_KEY=Your_Gemini_API_Key
+   ```
+2. **Initialize Config**: Create an empty file to prevent volume mount issues: `touch config.json`
+3. **Start the Bot**: Run `docker compose up -d`
+
+### Method 2: Local Execution
+1. **Environment Variables**: Fill in your tokens in the `.env` file.
+2. **Install Dependencies**: `pip install -r requirements.txt`
+3. **Start the Bot**: `python main.py`
+
+### 🔑 Role Permissions
+Server Administrators have default access. To authorize other roles, an Administrator must use the `/add_role` command in Discord. The configurations will be saved locally in `config.json`.
 
 ---
 
