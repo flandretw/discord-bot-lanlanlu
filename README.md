@@ -21,14 +21,16 @@ From the LanLanLu universe comes **LanLanLu** — a crazy bot dedicated to kidna
 
 * 🎙️ **`/record`**
   Start recording the current channel's chat, or perform a batch export.
-  * **Parameters**: Supports `after_message_id`, `before_message_id`, `start_time`, `end_time`, `minutes`, `limit`, and `summary`.
+  * **Parameters**: Supports `after_message_id`, `before_message_id`, `start_time`, `end_time`, `minutes`, `limit`, `summary`, and `format`.
+  * **Output Format (`format`)**: Choose between `txt` (default, mobile-friendly preview), `md`, or `both` for dual-format export.
   * **Normal Recording**: Listens for new messages until stopped.
   * **Batch Export**: Grasps messages within a specified range and outputs the file immediately.
 * 📝 **`/summary`**
   Directly generate an AI summary for discussions within a specified range without outputting the full chat log file.
+  * **Parameters**: Supports specifying a range and a `format` argument (`txt`, `md`, or `both`).
   * **Usage**: Useful when you just want a quick catch-up on discussion highlights and don't need a detailed log file.
 * 🛑 **`/stop`**
-  Stop recording, and output the chat log Markdown file along with an AI summary.
+  Stop recording, and output the chat log along with an AI summary (in the `format` specified during recording).
   * **Usage**: Can specify a `target_channel` to send the files to, or default to the current channel.
 * 💬 **`/say`**
   Send a specific message through the bot. Hides the trace of the command caller, speaking directly as the bot.

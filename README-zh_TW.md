@@ -21,14 +21,16 @@
 
 * 🎙️ **`/record`**
   開始錄製目前頻道的對話內容，或進行批次匯出。
-  * **參數**：支援 `after_message_id`、`before_message_id`、`start_time`、`end_time`、`minutes`、`limit` 與 `summary`。
+  * **參數**：支援 `after_message_id`、`before_message_id`、`start_time`、`end_time`、`minutes`、`limit`、`summary` 與 `format`。
+  * **輸出格式 (`format`)**：可選 `txt`（預設，手機可預覽）、`md` 或 `both` 雙格式同時輸出。
   * **一般錄製**：未指定結束點時，機器人會持續監聽新訊息。
   * **批次匯出**：有指定結束點時，將直接抓取範圍內訊息並結案輸出。
 * 📝 **`/summary`**
   直接針對指定範圍的對話產生 AI 摘要，不輸出完整的紀錄檔案。
+  * **參數**：支援指定範圍，並提供 `format` 參數選擇輸出為 `txt`（預設）、`md` 或 `both` 雙格式。
   * **用途**：適合只想快速了解討論重點，而不需要詳細紀錄檔時。
 * 🛑 **`/stop`**
-  停止錄製，並輸出對話紀錄 Markdown 檔案與 AI 摘要。
+  停止錄製，並輸出對話紀錄與 AI 摘要檔案（根據錄製時選擇的 `format` 格式）。
   * **對象**：可選填 `target_channel` 指定將檔案傳送至特定頻道，或預設於目前頻道輸出。
 * 💬 **`/say`**
   透過機器人傳送指定訊息，並隱藏指令呼叫者的痕跡。
